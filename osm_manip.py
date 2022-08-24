@@ -57,6 +57,38 @@ def get_way_data_from_file(id, osm_file):
     return None, None, None, None
 
 
+def make_way_dashed(way_id, osm_file):
+    target = f'<way id=\"{way_id}\" action=\"modify\" visible=\"true\" version=\"1\">'
+    dashed_tag = f'dashed'
+
+    with open(osm_file) as f:
+        contents = f.readlines()
+
+    for i, line in enumerate(contents):
+        if (line.strip())[0:len(target)] == target:
+            contents[i+2] = replace_substring(contents[i+2], dashed_tag, num_to_skip=2)
+            break
+
+    os.remove(osm_file)
+    with open(osm_file, "a+") as f:
+        f.writelines(contents)
+
+
+def make_ways_dashed(osm_file, way_list=None):
+    if way_list is None:
+        way_list = []
+        print('Enter ways to make dashed, type stop to process them')
+        while True:
+            _ = input()
+            if _.lower() == 'stop':
+                break
+            else:
+                way_list.append(_)
+
+    for way_id in way_list:
+        make_way_dashed(way_id, osm_file)
+
+
 def get_lat_lon_from_point(id, osm_file):
 
     target = f"<node id=\"{id}\" action=\"modify\" visible=\"true\" version=\"1\" lat=\""
@@ -144,6 +176,12 @@ def get_substring(string, start_char="\"", end_char="\"", num_to_skip=0):
     substr_start = string.index(start_char, start) + 1
     substr_end = string.index(end_char, substr_start)
     return string[substr_start:substr_end]
+
+
+# def replace_substring(string, replacee, replacer):
+#     i = string.index(replacee)
+#     new_string = string[:i] + replacer + string[i + len(replacee):]
+#     return new_string
 
 
 # Given a doubled lanelet boundary, get the lanelets associated with it and the other boundary of each
@@ -330,6 +368,33 @@ def reverse_way(lanelet_id, way_id, osm_file, create_new=False):
     os.remove(osm_file)
     with open(osm_file, "a+") as f:
         f.writelines(contents)
+
+
+def reverse_lanelets(osm_file, lanelet_list=None):
+
+    if lanelet_list is None:
+        lanelet_list = []
+        print('Enter lanelets, type stop to process them')
+        while True:
+            _ = input()
+            if _.lower() == 'stop':
+                break
+            else:
+                lanelet_list.append(_)
+    elif lanelet_list == 'all':
+        lanelet_list = get_all_lanelets_from_file(osm_file)
+
+    ways = {}
+    for lanelet_id in lanelet_list:
+        way1, way2 = get_ways_from_lanelet(lanelet_id, osm_file)
+        ways[str(way1)] = lanelet_id
+        ways[str(way2)] = lanelet_id
+
+    for way in ways.keys():
+        try:
+            reverse_way(ways[way], int(way), osm_file)
+        except:
+            print(f'got bad lanelet, I think: {way} - {ways[way]}')
 
 
 def get_ways_from_lanelet(lanelet_id, osm_file):
@@ -615,6 +680,30 @@ def remove_lanelet_header(lanelet_id, contents):
     return contents
 
 
+def remove_points(points, osm_file):
+    for point in points:
+        remove_point(point, osm_file)
+
+
+def remove_point(point_id, osm_file):
+    definition_target = f"<node id=\"{point_id}\""
+    use_target = f"<nd ref=\"{point_id}\""
+
+    with open(osm_file) as f:
+        contents = f.readlines()
+
+    for i, line in enumerate(contents):
+        if (line.strip())[0:len(definition_target)] == definition_target\
+                or (line.strip())[0:len(use_target)] == use_target:
+            del contents[i]
+            print(f'removed {point_id}')
+            # break
+
+    os.remove(osm_file)
+    with open(osm_file, "a+") as f:
+        f.writelines(contents)
+
+
 def remove_way(way_id, contents):
 
     delete_target = f"<way id=\"{way_id}\""
@@ -700,13 +789,15 @@ def get_all_lanelets_from_file(osm_file):
 def compute_way_length_from_file(osm_file, way, lat_to_m, lon_to_m):
     # print(f'starting way {way}')
     distance = 0
-    distances = []
+    too_close = []
 
     metadata, data, end, index = get_way_data_from_file(way, osm_file)
+    distances = np.zeros(len(data))
 
     last_point = int(get_substring(data[0], num_to_skip=0))
     last_lat, last_lon = get_lat_lon_from_point(last_point, osm_file)
-    for i, point_text in enumerate(data):
+    for i in range(len(data) // 2):
+        point_text = data[i]
         point = int(get_substring(point_text, num_to_skip=0))
         lat, lon = get_lat_lon_from_point(point, osm_file)
 
@@ -714,11 +805,34 @@ def compute_way_length_from_file(osm_file, way, lat_to_m, lon_to_m):
         delta_m_lon = lon_to_m * (lon - last_lon)
         dist_step = np.sqrt(delta_m_lat**2 + delta_m_lon**2)
 
-        distance += dist_step
-        distances.append(dist_step)
-        last_lat, last_lon = lat, lon
+        if i > 0:
+            if dist_step < 2.0:
+                too_close.append(point)
+            else:
+                distance += dist_step
+                distances[i] = dist_step
+                last_lat, last_lon = lat, lon
 
-    return distance, distances
+    last_point = int(get_substring(data[-1], num_to_skip=0))
+    last_lat, last_lon = get_lat_lon_from_point(last_point, osm_file)
+    for i in range(len(data) - 1, len(data) // 2 - 2, -1):
+        point_text = data[i]
+        point = int(get_substring(point_text, num_to_skip=0))
+        lat, lon = get_lat_lon_from_point(point, osm_file)
+
+        delta_m_lat = lat_to_m * (lat - last_lat)
+        delta_m_lon = lon_to_m * (lon - last_lon)
+        dist_step = np.sqrt(delta_m_lat ** 2 + delta_m_lon ** 2)
+
+        if i < len(data) - 1:
+            if dist_step < 2.0:
+                too_close.append(point)
+            else:
+                distance += dist_step
+                distances[i] = dist_step
+                last_lat, last_lon = lat, lon
+
+    return distance, distances, too_close
 
 
 def get_largest_id_from_file(osm_file):
@@ -754,8 +868,8 @@ def get_largest_id_from_file(osm_file):
 def split_lanelet_by_dist_from_file(osm_file, lanelet, way1, way2, split_dist, lat_to_m, lon_to_m):
 
     max_id = get_largest_id_from_file(osm_file)
-    way1_length, way1_dists = compute_way_length_from_file(osm_file, way1, lat_to_m, lon_to_m)
-    way2_length, way2_dists = compute_way_length_from_file(osm_file, way2, lat_to_m, lon_to_m)
+    way1_length, way1_dists, _ = compute_way_length_from_file(osm_file, way1, lat_to_m, lon_to_m)
+    way2_length, way2_dists, _ = compute_way_length_from_file(osm_file, way2, lat_to_m, lon_to_m)
     metadata1, data1, end1, index1 = get_way_data_from_file(way1, osm_file)
     metadata2, data2, end2, index2 = get_way_data_from_file(way2, osm_file)
 
@@ -780,6 +894,9 @@ def split_lanelet_by_dist_from_file(osm_file, lanelet, way1, way2, split_dist, l
     print(f'way: {way2}, splits: {data2[length_indices]}')
     print(f'associated lanelet: {lanelet}')
     print(f'starting id for new lanelets/ways: {max_id}')
+
+    # create list of [header, points, footer]
+    # 
 
     # get list of way1 and way2 points
     # walk along way1 to reach each split length, then record the index
@@ -842,14 +959,23 @@ def compute_lanelet_length(osm_file, lat, lon, lanelets=None):
 
     # get list of lanelets
     lanelets = get_all_lanelets_from_file(osm_file)
+    close_points = {}
 
     # for each lanelet
     for lanelet in lanelets:
         # get both boundaries
         way1, way2 = get_ways_from_lanelet(lanelet, osm_file)
         # use lat/lon gps to m to compute the length between each point in each boundary
-        d1, _ = compute_way_length_from_file(osm_file, way1, lat_to_m, lon_to_m)
-        d2, _ = compute_way_length_from_file(osm_file, way1, lat_to_m, lon_to_m)
+        d1, steps1, close1 = compute_way_length_from_file(osm_file, way1, lat_to_m, lon_to_m)
+        d2, steps2, close2 = compute_way_length_from_file(osm_file, way2, lat_to_m, lon_to_m)
+        if len(close1) > 0 or len(close2) > 0:
+            print('small')
+            for i in range(len(close1)):
+                # print(f'point {close1[i]}, from way {way1}, lanelet {lanelet}, distance < 0.25')
+                close_points[close1[i]] = way1
+            for i in range(len(close2)):
+                # print(f'point {close2[i]}, from way {way2}, lanelet {lanelet}, distance < 0.25')
+                close_points[close2[i]] = way1
         distance = (d1 + d2) / 2
         splits = int(distance // 150)
         if splits > 0 and distance % 150 < 50:
@@ -858,16 +984,65 @@ def compute_lanelet_length(osm_file, lat, lon, lanelets=None):
         if splits > 0:
             split_lanelet_by_dist_from_file(osm_file, lanelet, way1, way2, 150, lat_to_m, lon_to_m)
         # average the length of the two boundaries, and return that length
+    print()
+    for point in close_points.keys():
+        print(f'{point}')
+    return close_points
+
+
+def set_fixed_offset(osm_file, offset_x=0.0, offset_y=0.0, offset_lat=None, offset_lon=None, lat=28.1185796):
+    if offset_lat is None:
+        offset_lat = offset_y * (90.0 / 10000000.0)
+    if offset_lon is None:
+        offset_lon = offset_x * (90.0 / (10000000.0 * np.cos(np.pi/180 * lat)))
+    print(f'{offset_lat}, {offset_lon}')
+
+    target = f'<geoReference>'
+    node_target = f'<node id=\"'
+    # <geoReference>+proj=tmerc +lat_0=28.11857965984839 +lon_0=-81.83067386240469 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +geoidgrids=egm96_15.gtx +vunits=m +no_defs </geoReference>
+    # <node id='1' action='modify' visible='true' version='1' lat='28.12460546908' lon='-81.82879471276' />
+
+    with open(osm_file) as f:
+        contents = f.readlines()
+
+    for i, line in enumerate(contents):
+        if (line.strip())[0:len(target)] == target:
+            lat = float(get_substring(line.strip(), '=', ' ', num_to_skip=1))
+            lat += offset_lat
+            line = replace_substring(line, str(lat), '=', ' ', num_to_skip=1)
+            lon = float(get_substring(line.strip(), '=', ' ', num_to_skip=2))
+            lon += offset_lon
+            line = replace_substring(line, str(lon), '=', ' ', num_to_skip=2)
+            contents[i] = line
+        elif (line.strip())[0:len(node_target)] == node_target:
+            lat = float(get_substring(line.strip(), num_to_skip=8))
+            lat += offset_lat
+            line = replace_substring(line, str(lat), num_to_skip=8)
+            lon = float(get_substring(line.strip(), num_to_skip=10))
+            lon += offset_lon
+            line = replace_substring(line, str(lon), num_to_skip=10)
+            contents[i] = line
+
+    os.remove(osm_file)
+    with open(osm_file, "a+") as f:
+        f.writelines(contents)
 
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    osm_file = "/home/alex/Downloads/Suntrax_map/Suntrax_03.10.22_flipped.osm"
-    # osm_file = "/home/alex/Downloads/Suntrax_map/Suntrax_03.10.22_oval_only.osm"
-    route_file = "/home/alex/carma_ws/src/carma-platform/route/routing_Suntrax.txt"
+    osm_file = "/home/alex/Downloads/TFHRC map/TFHRC_TIM_CCW_fixed_small_lanelets.osm"
+    # osm_file = "/home/alex/Downloads/Suntrax_map/Suntrax_03.10.22_oval_only (copy).osm"
+    # route_file = "/home/alex/carma_ws/src/carma-platform/route/routing_Suntrax.txt"
 
     # deduplicate_points(osm_file)
-    # deduplicate_ways(osm_file)
+
+    # ENU: +lat = +y, +lon = -x
+    # set_fixed_offset(osm_file, offset_x=-1.5, offset_y=1.5)
+    set_fixed_offset(osm_file, offset_x=-2.85, offset_y=2.1)
+    # Add 1.5m at 20 degrees, move the car x 1.35, y -0.60, means move the map x -1.35, y 0.60
+    # set_fixed_offset(osm_file, offset_x=-1.0, offset_y=1.0)
+
+
 
     # while True:
     #     lanelet_id = int(input('Enter lanenelet to print way data \n'))
@@ -879,10 +1054,19 @@ if __name__ == '__main__':
 
     # max_id = get_largest_id_from_file(osm_file)
     # print(max_id)
-    # compute_lanelet_length(osm_file, 28.11857965984839, -81.83067386240469)
+    # close_points = compute_lanelet_length(osm_file, 28.11857965984839, -81.83067386240469)
+    # print(close_points)
+    #
+    # for point in close_points.keys():
+    #     remove_point(point, osm_file)
+
+    # close_points_arr = [344, 650, 1263, 6249, 5937, 6348, 12956, 12923]
+    # remove_points(close_points_arr, osm_file)
+    # close_points_arr = [30473, 30474, 30291, 30292, 37317, 37318, 38120, 38121, 43098, 43097, 45534, 45535, 45409, 45410, 46410, 46409, 50402, 50403, 50647, 50646, 57242, 57241, 57240, 57158, 57359, 57358, 57357, 57275, 57503, 57504, 57505, 57589, 57585, 57584, 57766, 57767, 57768, 57894, 57849, 57626, 57627, 57754, 57709, 81511, 81510, 81307, 81306, 81923, 81922, 82545, 82546]
+    # remove_points(close_points_arr, osm_file)
     # remove_lanelets_except(osm_file)
     # remove_orphaned_points(osm_file)
-    check_lanelets_for_route(None, osm_file, route_file)
+    # check_lanelets_for_route(None, osm_file, route_file)
 
     # To create an osm file from xodr:
     # https://github.com/usdot-fhwa-stol/opendrive2lanelet
@@ -897,8 +1081,7 @@ if __name__ == '__main__':
     # source /opt/ros/noetic/setup.bash
     # cd /workspaces/carma_ws/
     # colcon build --packages-select route --install-base install_ros1 --build-base build_ros1
-    # colcon test --packages-select route --install-base install_ros1 --build-base build_ros1
-    # colton test-result --verbose --all
+    # colcon test --packages-select route --install-base install_ros1 --build-base build_ros1 --event-handlers console_cohesion+
 
     # Then you can also check out the route file at routing.txt
     # You can move that file into this directory, so that other functions can use it to check routability
